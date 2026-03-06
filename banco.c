@@ -117,7 +117,7 @@ void insertarCliente(ColaBancaria *q, Cliente c) {
 int extraerCliente(ColaBancaria *q, Cliente *c) {
     pthread_mutex_lock(&q->mutex);
 
-    while (q->cuenta == 0 && !q->banco_cerrado == 0) {
+    while (q->cuenta == 0 && q->banco_cerrado == 0) {
         pthread_cond_wait(&q->cond_no_vacia, &q->mutex);
     }
 
@@ -232,7 +232,7 @@ int main(int argc, char *argv[]) {
     printf("MAX_CLIENTES: %d\n\n", MAX_CLIENTES);
     printf("Resultados Simulados:\n"); 
     printf("Clientes atendidos: %d\n", stats.clientes_atendidos); 
-    printf("Truncado por MAX_CLIENTES: %s\n", (N >= MAX_CLIENTES) ? "SI" : "NO");
+    printf("Truncado por MAX_CLIENTES: %s\n", truncado ? "SI" : "NO");
     printf("Tiempo promedio de espera (Wq): %.2f\n", Wq_sim);
     printf("Tiempo promedio en sistema (W): %.2f\n", W_sim);
     printf("Tiempo maximo de espera: %.2f\n", stats.Wq_max);
@@ -248,7 +248,7 @@ int main(int argc, char *argv[]) {
     } else {
         double sumatoria = 0.0;
         for (int k = 0; k < CAJEROS; k++) {
-            sumatoria += pow(rho, k) / calcularFactorial(k);
+            sumatoria += pow(a, k) / calcularFactorial(k);
         }
         double termino_c = (pow(a, CAJEROS) / calcularFactorial(CAJEROS)) * (1.0 / (1.0 - rho));
         double factor_C = termino_c / (sumatoria + termino_c);
