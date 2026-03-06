@@ -2,13 +2,13 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <math.h>
-#include <unistd.h>
 #include <stdbool.h>
 #include <time.h>
+#include <string.h>
 
 typedef struct {
     int id;
-    double arrival_time;
+    double A;
 } Cliente;
 
 typedef struct {
@@ -19,16 +19,19 @@ typedef struct {
     int cuenta;
 
     pthread_mutex_t mutex;
-    pthread_cond_t cond_no_llena;
     pthread_cond_t cond_no_vacia;
-    bool terminar;
+    int banco_cerrado;
 } ColaBancaria;
 
 typedef struct {
-    ColaBancaria *cola;
-    double lambda;
-    int total_clientes;
-} DatosLlegada;
+    double suma_Wq;
+    double suma_W;
+    double Wq_max;
+    double T_total;
+    int clientes_atendidos;
+    pthread_mutex_t mutex_stats;
+    pthread_mutex_t mutex_print;
+} Estadisticas;
 
 typedef struct {
     int id_cajero;
@@ -37,17 +40,58 @@ typedef struct {
     Estadisticas *stats;
 } DatosCajero;
 
-typedef struct {
-    double tiempo_espera_total;
-    double tiempo_servicio_total;
-    int clientes_atendidos;
-    pthread_mutex_t mutex_stats;
-} Estadisticas;
+int CAJEROS, TCIERRE, MAX_CLIENTES;
+double LAMBDA, MU;
 
-double generar_exponencial(double tasa) {
+double generarExponencial(double tasa) {
     double u = (double)rand() / (double)RAND_MAX;
-    if (u == 0) u = 1e-9;
+    if (u == 0.0) u = 1e-9;
+    if (u >= 1.0) u = 0.999999999;
     return -log(1.0 - u) / tasa; 
+}
+
+double calcularFactorial(int n) {
+    if (n == 0 || n == 1) return 1.0;
+    double fact = 1.0;
+    for (int i = 2; i <= n; i++) {
+        fact *= i;
+    }
+    return fact;
+}
+
+int leerConfiguracion(const char *filename) {
+    FILE *file = fopen(filename, "r");
+    if (file == NULL) {
+        fprintf(stderr, "Error: El archivo .txt no existe o no puede abrirse.\n");
+        return 1;
+    }
+
+    char buffer[100], basura[2];
+    int f_caj = 0, f_tci = 0, f_lam = 0, f_mu = 0, f_max = 0;
+
+    while (fgets(buffer, sizeof(buffer), file) != NULL) {
+        if (buffer[0] == '\n' || buffer[0] == '\r' || buffer[0] == '#' || 
+           (buffer[0] == '/' && buffer[1] == '/')) continue;
+
+        if (strncmp(buffer, "CAJEROS=", 8) == 0) {
+            if (sscanf(buffer + 8, "%d%1s", &CAJEROS, basura) == 1 && CAJEROS >= 1) f_caj = 1;
+        } else if (strncmp(buffer, "TCIERRE=", 8) == 0) {
+            if (sscanf(buffer + 8, "%d%1s", &TCIERRE, basura) == 1 && TCIERRE > 0) f_tci = 1;
+        } else if (strncmp(buffer, "LAMBDA=", 7) == 0) {
+            if (sscanf(buffer + 7, "%lf%1s", &LAMBDA, basura) == 1 && LAMBDA > 0) f_lam = 1;
+        } else if (strncmp(buffer, "MU=", 3) == 0) {
+            if (sscanf(buffer + 3, "%lf%1s", &MU, basura) == 1 && MU > 0) f_mu = 1;
+        } else if (strncmp(buffer, "MAX_CLIENTES=", 13) == 0) {
+            if (sscanf(buffer + 13, "%d%1s", &MAX_CLIENTES, basura) == 1 && MAX_CLIENTES >= 1) f_max = 1;
+        }
+    }
+    fclose(file);
+    
+    if (!(f_caj && f_tci && f_lam && f_mu && f_max)) {
+        fprintf(stderr, "Error: Faltan parametros o violan restricciones.\n");
+        return 1;
+    }
+    return 0;
 }
 
 void inicializarCola(ColaBancaria *q, int capacidad) {
@@ -56,36 +100,28 @@ void inicializarCola(ColaBancaria *q, int capacidad) {
     q->frente = 0;
     q->final = 0;
     q->cuenta = 0;
-    q->terminar = false;
+    q->banco_cerrado = 0;
 
     pthread_mutex_init(&q->mutex, NULL);
-    pthread_cond_init(&q->cond_no_llena, NULL);
     pthread_cond_init(&q->cond_no_vacia, NULL);
 }
 
 void insertarCliente(ColaBancaria *q, Cliente c) {
     pthread_mutex_lock(&q->mutex);
-
-    while (q->cuenta == q->capacidad) {
-        pthread_cond_wait(&q->cond_no_llena, &q->mutex);
-    }
-
     q->buffer[q->final] = c;
     q->final = (q->final + 1) % q->capacidad;
     q->cuenta++;
-
-    pthread_cond_signal(&q->cond_no_vacia);
     pthread_mutex_unlock(&q->mutex);
 }
 
 int extraerCliente(ColaBancaria *q, Cliente *c) {
     pthread_mutex_lock(&q->mutex);
 
-    while (q->cuenta == 0 && !q->terminar) {
+    while (q->cuenta == 0 && !q->banco_cerrado == 0) {
         pthread_cond_wait(&q->cond_no_vacia, &q->mutex);
     }
 
-    if (q->cuenta == 0 && q->terminar) {
+    if (q->cuenta == 0 && q->banco_cerrado == 1) {
         pthread_mutex_unlock(&q->mutex);
         return -1; 
     }
@@ -93,92 +129,144 @@ int extraerCliente(ColaBancaria *q, Cliente *c) {
     *c = q->buffer[q->frente];
     q->frente = (q->frente + 1) % q->capacidad;
     q->cuenta--;
-
-    pthread_cond_signal(&q->cond_no_llena);
     pthread_mutex_unlock(&q->mutex);
-    
     return 0;
-}
-
-void* llegada_thread_func(void* arg) {
-    DatosLlegada *datos = (DatosLlegada*)arg;
-
-    for (int i = 0; i < datos->total_clientes; i++) {
-        double espera = generar_exponencial(datos->lambda);
-
-        usleep((useconds_t)(espera * 1000000));
-        Cliente nuevo;
-        nuevo.id = i + 1;
-        nuevo.arrival_time = (double)time(NULL);
-
-        printf("[Llegada] Cliente %d entro a la cola.\n", nuevo.id);
-        insertarCliente(datos->cola, nuevo);
-    }
-    return NULL;
 }
 
 void* cajero_thread_func(void* arg) {
     DatosCajero *datos = (DatosCajero*)arg;
     Cliente c;
+    double Fant = 0.0;
 
-    while (1) {
-        int resultado = extraerCliente(datos->cola, &c);
+    while (extraerCliente(datos->cola, &c) == 0) {
+        double S = generarExponencial(datos->mu);
+        double B = fmax(c.A, Fant);
+        double F = B + S;
+        Fant = F;
 
-        if (resultado == -1) {
-            printf("[Cajero %d] No hay mas clientes. No retiro\n.", datos->id_cajero);
-            break;
-        }
+        double Wq = B - c.A;
+        double W = F - c.A;
 
-        double t_servicio = generar_exponencial(datos->mu);
-        printf("[Cajero %d] Atendiendo al cliente %d por %.2f segundos...\n",
-               datos->id_cajero, c.id, t_servicio);
-
-        usleep((useconds_t)(t_servicio * 1000000));
-
-        printf("[Cajero %d] Cliente %d atendido con exito.\n", datos->id_cajero, c.id);
+        pthread_mutex_lock(&datos->stats->mutex_print);
+        printf("[t=%.2f] Cliente %d inicia atencion en Cajero %d\n", B, c.id, datos->id_cajero);
+        printf("[t=%.2f] Cliente %d finaliza atencion en Cajero %d\n", F, c.id, datos->id_cajero);
+        pthread_mutex_unlock(&datos->stats->mutex_print);
+        pthread_mutex_lock(&datos->stats->mutex_stats);
+        datos->stats->suma_Wq += Wq;
+        datos->stats->suma_W += W;
+        if (Wq > datos->stats->Wq_max) datos->stats->Wq_max = Wq;
+        if (F > datos->stats->T_total) datos->stats->T_total = F;
+        datos->stats->clientes_atendidos++;
+        pthread_mutex_unlock(&datos->stats->mutex_stats);
     }
-
     return NULL;
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 6) return 1;
+    if (argc != 2) {
+        fprintf(stderr, "Uso: %s <archivo.txt>\n", argv[0]);
+        return 1;
+    }
+    if (leerConfiguracion(argv[1]) != 0) return 1;
+
     srand(time(NULL));
 
-    double lambda = atof(argv[1]);
-    double mu = atof(argv[2]);
-    int num_cajeros = atoi(argv[3]);
-    int capacidad_cola = atoi(argv[4]);
-    int total_clientes = atoi(argv[5]);
-
     ColaBancaria cola;
-    inicializarCola(&cola, capacidad_cola);
+    inicializarCola(&cola, MAX_CLIENTES);
 
-    Estadisticas stats = {0, 0, 0, PTHREAD_MUTEX_INITIALIZER};
+    Estadisticas stats;
+    stats.suma_Wq = 0.0;
+    stats.suma_W = 0.0;
+    stats.Wq_max = 0.0;
+    stats.T_total = 0.0;
+    stats.clientes_atendidos = 0;
+    pthread_mutex_init(&stats.mutex_stats, NULL);
+    pthread_mutex_init(&stats.mutex_print, NULL);
 
-    pthread_t hilo_llegada;
-    DatosLlegada d_lleg = {&cola, lambda, total_clientes};
-    pthread_create(&hilo_llegada, NULL, llegada_thread_func, &d_lleg);
+    double acumulado = 0.0;
+    int N = 0;
+    int truncado = 0;
 
-    pthread_t cajeros[num_cajeros];
-    DatosCajero d_caj[num_cajeros];
-    for (int i = 0; i < num_cajeros; i++) {
-        d_caj[i] = (DatosCajero){i + 1, &cola, mu, &stats}; 
-        pthread_create(&cajeros[i], NULL, cajero_thread_func, &d_caj[i]);
+    while (N < MAX_CLIENTES) {
+        acumulado += generarExponencial(LAMBDA);
+        if (acumulado > TCIERRE) break; // 
+        
+        Cliente c = {N + 1, acumulado};
+        insertarCliente(&cola, c);
+        N++;
+        
+        printf("[t=%.2f] Cliente %d llega al banco\n", c.A, c.id);
+    }
+    
+    if (N == MAX_CLIENTES && acumulado <= TCIERRE) {
+        truncado = 1; 
     }
 
-    pthread_join(hilo_llegada, NULL);
-
+    pthread_t cajeros[CAJEROS];
+    DatosCajero d_caj[CAJEROS];
+    for (int i = 0; i < CAJEROS; i++) {
+        d_caj[i] = (DatosCajero){i + 1, &cola, MU, &stats};
+        pthread_create(&cajeros[i], NULL, cajero_thread_func, &d_caj[i]);
+    }
+    
     pthread_mutex_lock(&cola.mutex);
-    cola.terminar = true;
+    cola.banco_cerrado = 1;
     pthread_cond_broadcast(&cola.cond_no_vacia);
     pthread_mutex_unlock(&cola.mutex);
 
-    for (int i = 0; i < num_cajeros; i++) pthread_join(cajeros[i], NULL);
+    for (int i = 0; i < CAJEROS; i++) {
+        pthread_join(cajeros[i], NULL);
+    }
 
-    printf("Simulación terminada. Clientes atendidos: %d\n", stats.clientes_atendidos);
-    printf("Tiempo de espera promedio: %.4f\n", stats.tiempo_espera_total / stats.clientes_atendidos);
+    double Wq_sim = (stats.clientes_atendidos > 0) ? stats.suma_Wq / stats.clientes_atendidos : 0;
+    double W_sim = (stats.clientes_atendidos > 0) ? stats.suma_W / stats.clientes_atendidos : 0;
+
+    printf("\nRESUMEN FINAL\n");
+    printf("Parametros:\n");
+    printf("CAJEROS: %d\n", CAJEROS);
+    printf("TCIERRE: %d\n", TCIERRE);
+    printf("LAMBDA: %.2f\n", LAMBDA);
+    printf("MU: %.2f\n", MU);
+    printf("MAX_CLIENTES: %d\n\n", MAX_CLIENTES);
+    
+    printf("Resultados Simulados:\n");
+    printf("Clientes atendidos: %d\n", stats.clientes_atendidos);
+    printf("Truncado por MAX_CLIENTES: %s\n", truncado ? "SI" : "NO");
+    printf("Tiempo promedio de espera (Wq): %.2f\n", Wq_sim);
+    printf("Tiempo promedio en sistema (W): %.2f\n", W_sim);
+    printf("Tiempo maximo de espera: %.2f\n", stats.Wq_max);
+    printf("Tiempo total hasta ultimo cliente: %.2f\n\n", stats.T_total);
+
+    printf("Resultados Teoricos (M/M/c):\n");
+    double a = LAMBDA / MU;
+    double rho = LAMBDA / (CAJEROS * MU);
+    printf("Utilizacion (rho): %.4f\n", rho);
+
+    if (rho >= 1.0) {
+        printf("Estado del sistema:\nrho = %.4f >= 1\nSistema inestable\n", rho);
+    } else {
+        double sumatoria = 0.0;
+        for (int k = 0; k < CAJEROS; k++) {
+            sumatoria += pow(rho, k) / calcularFactorial(k);
+        }
+        double termino_c = (pow(a, CAJEROS) / calcularFactorial(CAJEROS)) * (1.0 / (1.0 - rho));
+        double factor_C = termino_c / (sumatoria + termino_c);
+        
+        double Wq_teo = factor_C / ((CAJEROS * MU) - LAMBDA);
+        double W_teo = Wq_teo + (1.0 / MU);
+        
+        double error_Wq = (Wq_teo > 0) ? fabs(Wq_sim - Wq_teo) / Wq_teo * 100 : 0;
+        double error_W = (W_teo > 0) ? fabs(W_sim - W_teo) / W_teo * 100 : 0;
+
+        printf("Tiempo promedio de espera teorico: %.2f\n", Wq_teo);
+        printf("Tiempo promedio en sistema teorico: %.2f\n", W_teo);
+        printf("Error relativo Wq: %.1f %%\n", error_Wq);
+        printf("Error relativo W: %.1f %%\n", error_W);
+        printf("Estado del sistema:\nrho = %.4f < 1\nSistema estable\n", rho);
+    }
 
     free(cola.buffer);
+    pthread_mutex_destroy(&stats.mutex_stats);
+    pthread_mutex_destroy(&stats.mutex_print);
     return 0;
-}    
+}
