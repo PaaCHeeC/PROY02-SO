@@ -205,10 +205,12 @@ int main(int argc, char *argv[]) {
     pthread_t cajeros[CAJEROS];
     DatosCajero d_caj[CAJEROS];
     for (int i = 0; i < CAJEROS; i++) {
-        d_caj[i] = (DatosCajero){i + 1, &cola, MU, &stats};
+        d_caj[i].id_cajero = i + 1;
+        d_caj[i].cola = &cola;
+        d_caj[i].mu = MU;
+        d_caj[i].stats = &stats;
         pthread_create(&cajeros[i], NULL, cajero_thread_func, &d_caj[i]);
     }
-    
     pthread_mutex_lock(&cola.mutex);
     cola.banco_cerrado = 1;
     pthread_cond_broadcast(&cola.cond_no_vacia);
@@ -228,15 +230,14 @@ int main(int argc, char *argv[]) {
     printf("LAMBDA: %.2f\n", LAMBDA);
     printf("MU: %.2f\n", MU);
     printf("MAX_CLIENTES: %d\n\n", MAX_CLIENTES);
-    
-    printf("Resultados Simulados:\n");
-    printf("Clientes atendidos: %d\n", stats.clientes_atendidos);
-    printf("Truncado por MAX_CLIENTES: %s\n", truncado ? "SI" : "NO");
+    printf("Resultados Simulados:\n"); 
+    printf("Clientes atendidos: %d\n", stats.clientes_atendidos); 
+    printf("Truncado por MAX_CLIENTES: %s\n", (N >= MAX_CLIENTES) ? "SI" : "NO");
     printf("Tiempo promedio de espera (Wq): %.2f\n", Wq_sim);
     printf("Tiempo promedio en sistema (W): %.2f\n", W_sim);
     printf("Tiempo maximo de espera: %.2f\n", stats.Wq_max);
     printf("Tiempo total hasta ultimo cliente: %.2f\n\n", stats.T_total);
-
+    
     printf("Resultados Teoricos (M/M/c):\n");
     double a = LAMBDA / MU;
     double rho = LAMBDA / (CAJEROS * MU);
