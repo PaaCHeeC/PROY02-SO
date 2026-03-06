@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <pthread.h>
 #include <math.h>
 #include <unistd.h>
@@ -101,20 +102,19 @@ int extraerCliente(ColaBancaria *q, Cliente *c)
 int Lecture()
 {
     FILE *file;
-    // char linea[100];
+
     char buffer[100];
-    // char cadena[50] = "";
-    int CAJERO = 0;
-    int TCIERRE = 0;
-    double LAMBDA = 0.0;
-    double MU = 0.0;
-    int MAX_CLIENTES = 0;
+    char basura[2];
+
+    int CAJEROS, TCIERRE, MAX_CLIENTES;
+    int f_cajeros = 0, f_tcierre = 0, f_maxclientes = 0, f_lambda = 0, f_mu = 0;
+    double LAMBDA, MU;
 
     file = fopen("Datos.txt", "r");
 
     if (file == NULL)
     {
-        perror("Error al abrir archivo.");
+        fprintf(stderr, "Error: El archivo .txt no existe o no puede abrirse.");
         return 1;
     }
 
@@ -126,25 +126,120 @@ int Lecture()
         if (buffer[0] == '#' || (buffer[0] == '/' && buffer[1] == '/'))
             continue;
 
-        if (sscanf(buffer, "CAJERO=%d", &CAJERO) == 1)
-            continue;
+        if (strncmp(buffer, "CAJEROS=", 8) == 0)
+        {
+            if (sscanf(buffer + 8, "%d%1s", &CAJEROS, basura) != 1)
+            {
+                fprintf(stderr, "Error: El valor de CAJEROS no es del tipo correcto (se espera un entero).\n");
+                return 1;
+            }
+            if (CAJEROS < 1)
+            {
+                fprintf(stderr, "Error: El valor de CAJEROS debe ser mayor o igual que 1.\n");
+                return 1;
+            }
 
-        if (sscanf(buffer, "TCIERRE=%d", &TCIERRE) == 1)
+            f_cajeros = 1;
             continue;
+        }
 
-        if (sscanf(buffer, "LAMBDA=%lf", &LAMBDA) == 1)
-            continue;
+        if (strncmp(buffer, "TCIERRE=", 8) == 0)
+        {
+            if (sscanf(buffer + 8, "%d%1s", &TCIERRE, basura) != 1)
+            {
+                fprintf(stderr, "Error: El valor de TCIERRE no es del tipo correcto (se espera un entero).\n");
+                return 1;
+            }
+            if (TCIERRE <= 0)
+            {
+                fprintf(stderr, "Error: El valor de TCIERRE debe ser mayor que 0.\n");
+                return 1;
+            }
 
-        if (sscanf(buffer, "MU=%lf", &MU) == 1)
+            f_tcierre = 1;
             continue;
+        }
 
-        if (sscanf(buffer, "MAX_CLIENTES=%d", &MAX_CLIENTES) == 1)
+        if (strncmp(buffer, "LAMBDA=", 7) == 0)
+        {
+            if (strchr(buffer + 7, '.') == NULL)
+            {
+                fprintf(stderr, "Error: El valor de LAMBDA no es del tipo correcto (se espera un decimal con '.').\n");
+                return 1;
+            }
+
+            if (sscanf(buffer + 7, "%lf%1s", &LAMBDA, basura) != 1)
+            {
+                fprintf(stderr, "Error: El valor de LAMBDA no es del tipo correcto (se espera un decimal).\n");
+                return 1;
+            }
+            if (LAMBDA <= 0.0)
+            {
+                fprintf(stderr, "Error: El valor de LAMBDA debe ser mayor que 0.\n");
+                return 1;
+            }
+
+            f_lambda = 1;
             continue;
+        }
+
+        if (strncmp(buffer, "MU=", 3) == 0)
+        {
+            if (strchr(buffer + 3, '.') == NULL)
+            {
+                fprintf(stderr, "Error: El valor de MU no es del tipo correcto (se espera un decimal con '.').\n");
+                return 1;
+            }
+
+            if (sscanf(buffer + 3, "%lf%1s", &MU, basura) != 1)
+            {
+                fprintf(stderr, "Error: El valor de MU no es del tipo correcto (se espera un decimal).\n");
+                return 1;
+            }
+            if (MU <= 0.0)
+            {
+                fprintf(stderr, "Error: El valor de MU debe ser mayor que 0.\n");
+                return 1;
+            }
+
+            f_mu = 1;
+            continue;
+        }
+
+        if (strncmp(buffer, "MAX_CLIENTES=", 13) == 0)
+        {
+            if (sscanf(buffer + 13, "%d%1s", &MAX_CLIENTES, basura) != 1)
+            {
+                fprintf(stderr, "Error: El valor de MAX_CLIENTES no es del tipo correcto (se espera un entero).\n");
+                return 1;
+            }
+            if (MAX_CLIENTES < 1)
+            {
+                fprintf(stderr, "Error: El valor de MAX_CLIENTES debe ser mayor que 1.\n");
+                return 1;
+            }
+
+            f_maxclientes = 1;
+            continue;
+        }
+
+        if (strchr(buffer, '=') != NULL)
+        {
+            char clave[50];
+            sscanf(buffer, "%49[^=]", clave);
+            fprintf(stderr, "Error: Parametro desconocido encontrado y omitido %s\n", clave);
+        }
     }
 
     fclose(file);
 
-    printf("%d\n", CAJERO);
+    if (!f_cajeros || !f_tcierre || !f_lambda || !f_mu || !f_maxclientes)
+    {
+        fprintf(stderr, "Error: Faltan parametros obligatorios en el archivo de configuracion.\n");
+        return 1;
+    }
+
+    printf("%d\n", CAJEROS);
     printf("%d\n", TCIERRE);
     printf("%lf\n", LAMBDA);
     printf("%lf\n", MU);
