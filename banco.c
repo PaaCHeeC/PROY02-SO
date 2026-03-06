@@ -45,13 +45,8 @@ typedef struct {
 } Estadisticas;
 
 double generar_exponencial(double tasa) {
-    // Generar U ~ Uniforme(0,1)
     double u = (double)rand() / (double)RAND_MAX;
-
-    // Evitar log(0) que daria error
     if (u == 0) u = 1e-9;
-    
-    // Formula: T = -ln(1-u) / tasa
     return -log(1.0 - u) / tasa; 
 }
 
