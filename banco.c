@@ -6,6 +6,12 @@
 #include <time.h>
 #include <string.h>
 
+#define LANZAR_ERR(msg)            \
+    {                              \
+        fprintf(stderr, msg "\n"); \
+        return -1;                 \
+    }
+
 typedef struct
 {
     int id;
@@ -62,8 +68,7 @@ int leerConfiguracion(const char *filename)
     FILE *file = fopen(filename, "r");
     if (file == NULL)
     {
-        fprintf(stderr, "Error: El archivo .txt no existe o no puede abrirse.\n");
-        return 1;
+        LANZAR_ERR("Error: El archivo .txt no existe o no puede abrirse.");
     }
 
     char buffer[100], basura[2];
@@ -113,8 +118,7 @@ int leerConfiguracion(const char *filename)
 
     if (!(f_caj && f_tci && f_lam && f_mu && f_max))
     {
-        fprintf(stderr, "Error: Faltan parametros o violan restricciones.\n");
-        return 1;
+        LANZAR_ERR("Error: Faltan parametros o violan restricciones.");
     }
     return 0;
 }
@@ -197,32 +201,10 @@ void *cajero_thread_func(void *arg)
     return NULL;
 }
 
-int main(int argc, char *argv[])
+int simularLlegadas(ColaBancaria *cola)
 {
-    if (argc != 2)
-    {
-        fprintf(stderr, "Uso: %s <archivo.txt>\n", argv[0]);
-        return 1;
-    }
-    if (leerConfiguracion(argv[1]) != 0)
-        return 1;
-
-    srand(time(NULL));
-
-    ColaBancaria cola;
-    inicializarCola(&cola, MAX_CLIENTES);
-
-    Estadisticas stats;
-    stats.suma_Wq = 0.0;
-    stats.suma_W = 0.0;
-    stats.Wq_max = 0.0;
-    stats.T_total = 0.0;
-    stats.clientes_atendidos = 0;
-    pthread_mutex_init(&stats.mutex_stats, NULL);
-    pthread_mutex_init(&stats.mutex_print, NULL);
-
     double acumulado = 0.0;
-    int N = 0, truncado = 0;
+    int N = 0;
 
     while (N < MAX_CLIENTES)
     {
@@ -231,40 +213,44 @@ int main(int argc, char *argv[])
             break;
 
         Cliente c = {N + 1, acumulado};
-        insertarCliente(&cola, c);
+        insertarCliente(cola, c);
         N++;
 
         printf("[t=%.2f] Cliente %d llega al banco\n", c.A, c.id);
     }
 
-    if (N == MAX_CLIENTES && acumulado <= TCIERRE)
-    {
-        truncado = 1;
-    }
+    return (N == MAX_CLIENTES && acumulado <= TCIERRE) ? 1 : 0;
+}
 
+void procesarCajeros(ColaBancaria *cola, Estadisticas *stats)
+{
     pthread_t cajeros[CAJEROS];
     DatosCajero d_caj[CAJEROS];
+
     for (int i = 0; i < CAJEROS; i++)
     {
         d_caj[i].id_cajero = i + 1;
-        d_caj[i].cola = &cola;
+        d_caj[i].cola = cola;
         d_caj[i].mu = MU;
-        d_caj[i].stats = &stats;
+        d_caj[i].stats = stats;
         pthread_create(&cajeros[i], NULL, cajero_thread_func, &d_caj[i]);
     }
 
-    pthread_mutex_lock(&cola.mutex);
-    cola.banco_cerrado = 1;
-    pthread_cond_broadcast(&cola.cond_no_vacia);
-    pthread_mutex_unlock(&cola.mutex);
+    pthread_mutex_lock(&cola->mutex);
+    cola->banco_cerrado = 1;
+    pthread_cond_broadcast(&cola->cond_no_vacia);
+    pthread_mutex_unlock(&cola->mutex);
 
     for (int i = 0; i < CAJEROS; i++)
     {
         pthread_join(cajeros[i], NULL);
     }
+}
 
-    double Wq_sim = (stats.clientes_atendidos > 0) ? stats.suma_Wq / stats.clientes_atendidos : 0;
-    double W_sim = (stats.clientes_atendidos > 0) ? stats.suma_W / stats.clientes_atendidos : 0;
+void imprimirReporteFinal(Estadisticas *stats, int truncado)
+{
+    double Wq_sim = (stats->clientes_atendidos > 0) ? stats->suma_Wq / stats->clientes_atendidos : 0;
+    double W_sim = (stats->clientes_atendidos > 0) ? stats->suma_W / stats->clientes_atendidos : 0;
 
     printf("\n==================================================\n");
     printf("                   RESUMEN FINAL");
@@ -277,12 +263,12 @@ int main(int argc, char *argv[])
     printf("  MAX_CLIENTES:     %d\n", MAX_CLIENTES);
 
     printf("Resultados Simulados:\n");
-    printf("  Clientes atendidos:                %d\n", stats.clientes_atendidos);
+    printf("  Clientes atendidos:                %d\n", stats->clientes_atendidos);
     printf("  Truncado por MAX_CLIENTES:         %s\n", truncado ? "SI" : "NO");
     printf("  Tiempo promedio de espera (Wq):    %.2f\n", Wq_sim);
     printf("  Tiempo promedio en sistema (W):    %.2f\n", W_sim);
-    printf("  Tiempo maximo de espera:           %.2f\n", stats.Wq_max);
-    printf("  Tiempo total hasta ultimo cliente: %.2f\n", stats.T_total);
+    printf("  Tiempo maximo de espera:           %.2f\n", stats->Wq_max);
+    printf("  Tiempo total hasta ultimo cliente: %.2f\n", stats->T_total);
 
     printf("Resultados Teoricos (M/M/c):\n");
 
@@ -330,16 +316,51 @@ int main(int argc, char *argv[])
         printf("  Tiempo promedio en sistema teorico: %.2f\n", W_teo);
         printf("  Error relativo Wq: %.1f %%\n", error_Wq);
         printf("  Error relativo W:  %.1f %%\n", error_W);
-
         printf("Estado del sistema:\n  rho = %.4f < 1 -> Sistema estable\n", rho);
         printf("==================================================\n");
     }
+}
 
-    free(cola.buffer);
+void limpiarRecursos(ColaBancaria *cola, Estadisticas *stats)
+{
+    free(cola->buffer);
+    pthread_mutex_destroy(&cola->mutex);
+    pthread_cond_destroy(&cola->cond_no_vacia);
+    pthread_mutex_destroy(&stats->mutex_stats);
+    pthread_mutex_destroy(&stats->mutex_print);
+}
 
-    pthread_mutex_destroy(&cola.mutex);
-    pthread_cond_destroy(&cola.cond_no_vacia);
-    pthread_mutex_destroy(&stats.mutex_stats);
-    pthread_mutex_destroy(&stats.mutex_print);
+int main(int argc, char *argv[])
+{
+    if (argc != 2)
+    {
+        fprintf(stderr, "Uso: %s <archivo.txt>\n", argv[0]);
+        return 1;
+    }
+    if (leerConfiguracion(argv[1]) != 0)
+        return 1;
+
+    srand(time(NULL));
+
+    ColaBancaria cola;
+    inicializarCola(&cola, MAX_CLIENTES);
+
+    Estadisticas stats;
+    stats.suma_Wq = 0.0;
+    stats.suma_W = 0.0;
+    stats.Wq_max = 0.0;
+    stats.T_total = 0.0;
+    stats.clientes_atendidos = 0;
+    pthread_mutex_init(&stats.mutex_stats, NULL);
+    pthread_mutex_init(&stats.mutex_print, NULL);
+
+    int truncado = simularLlegadas(&cola);
+
+    procesarCajeros(&cola, &stats);
+
+    imprimirReporteFinal(&stats, truncado);
+
+    limpiarRecursos(&cola, &stats);
+
     return 0;
 }
