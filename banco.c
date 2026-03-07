@@ -126,22 +126,47 @@ int leerConfiguracion(const char *filename)
 void inicializarCola(ColaBancaria *q, int capacidad)
 {
     q->buffer = malloc(sizeof(Cliente) * capacidad);
+
+    if (q->buffer == NULL)
+    {
+        fprintf(stderr, "Error: No se pudo asignar memoria para el buffer de la cola.\n");
+        exit(EXIT_FAILURE);
+    }
+
     q->capacidad = capacidad;
     q->frente = 0;
     q->final = 0;
     q->cuenta = 0;
     q->banco_cerrado = 0;
 
-    pthread_mutex_init(&q->mutex, NULL);
-    pthread_cond_init(&q->cond_no_vacia, NULL);
+    if (pthread_mutex_init(&q->mutex, NULL) != 0)
+    {
+        fprintf(stderr, "Error al inicialiar mutex de cola.\n");
+        free(q->buffer);
+        exit(EXIT_FAILURE);
+    }
+    if (pthread_cond_init(&q->cond_no_vacia, NULL) != 0)
+    {
+        fprintf(stderr, "Error al inicialiar variable de condicion.\n");
+        pthread_mutex_destroy(&q->mutex);
+        free(q->buffer);
+        exit(EXIT_FAILURE);
+    }
 }
 
 void insertarCliente(ColaBancaria *q, Cliente c)
 {
     pthread_mutex_lock(&q->mutex);
-    q->buffer[q->final] = c;
-    q->final = (q->final + 1) % q->capacidad;
-    q->cuenta++;
+
+    if (q->cuenta < q->capacidad)
+    {
+        q->buffer[q->final] = c;
+        q->final = (q->final + 1) % q->capacidad;
+        q->cuenta++;
+
+        pthread_cond_signal(&q->cond_no_vacia);
+    }
+
     pthread_mutex_unlock(&q->mutex);
 }
 
@@ -233,7 +258,13 @@ void procesarCajeros(ColaBancaria *cola, Estadisticas *stats)
         d_caj[i].cola = cola;
         d_caj[i].mu = MU;
         d_caj[i].stats = stats;
-        pthread_create(&cajeros[i], NULL, cajero_thread_func, &d_caj[i]);
+        int creacion = pthread_create(&cajeros[i], NULL, cajero_thread_func, &d_caj[i]);
+
+        if (creacion != 0)
+        {
+            fprintf(stderr, "Error creando hilo de cajero %d.\n", i);
+            exit(EXIT_FAILURE);
+        }
     }
 
     pthread_mutex_lock(&cola->mutex);
@@ -243,7 +274,12 @@ void procesarCajeros(ColaBancaria *cola, Estadisticas *stats)
 
     for (int i = 0; i < CAJEROS; i++)
     {
-        pthread_join(cajeros[i], NULL);
+        int reunion = pthread_join(cajeros[i], NULL);
+        if (reunion != 0)
+        {
+            fprintf(stderr, "Error esperando hilo cajero %d.\n", i);
+            exit(EXIT_FAILURE);
+        }
     }
 }
 
@@ -323,7 +359,8 @@ void imprimirReporteFinal(Estadisticas *stats, int truncado)
 
 void limpiarRecursos(ColaBancaria *cola, Estadisticas *stats)
 {
-    free(cola->buffer);
+    if (cola->buffer)
+        free(cola->buffer);
     pthread_mutex_destroy(&cola->mutex);
     pthread_cond_destroy(&cola->cond_no_vacia);
     pthread_mutex_destroy(&stats->mutex_stats);
@@ -337,7 +374,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Uso: %s <archivo.txt>\n", argv[0]);
         return 1;
     }
-    if (leerConfiguracion(argv[1]) != 0)
+    else if (leerConfiguracion(argv[1]) != 0)
         return 1;
 
     srand(time(NULL));
@@ -345,12 +382,8 @@ int main(int argc, char *argv[])
     ColaBancaria cola;
     inicializarCola(&cola, MAX_CLIENTES);
 
-    Estadisticas stats;
-    stats.suma_Wq = 0.0;
-    stats.suma_W = 0.0;
-    stats.Wq_max = 0.0;
-    stats.T_total = 0.0;
-    stats.clientes_atendidos = 0;
+    Estadisticas stats = {0};
+
     pthread_mutex_init(&stats.mutex_stats, NULL);
     pthread_mutex_init(&stats.mutex_print, NULL);
 
@@ -359,7 +392,6 @@ int main(int argc, char *argv[])
     procesarCajeros(&cola, &stats);
 
     imprimirReporteFinal(&stats, truncado);
-
     limpiarRecursos(&cola, &stats);
 
     return 0;
