@@ -102,6 +102,12 @@ int leerConfiguracion(const char *filename)
             if (sscanf(buffer + 13, "%d%1s", &MAX_CLIENTES, basura) == 1 && MAX_CLIENTES >= 1)
                 f_max = 1;
         }
+        else if (strchr(buffer, '=') != NULL)
+        {
+            char param_desconocido[50];
+            if (sscanf(buffer, "%49[^=]", param_desconocido) == 1)
+                fprintf(stderr, "Warning: Parámetro desconocido '%s' encontrado y omitido.\n\n", param_desconocido);
+        }
     }
     fclose(file);
 
@@ -161,14 +167,14 @@ void *cajero_thread_func(void *arg)
 {
     DatosCajero *datos = (DatosCajero *)arg;
     Cliente c;
-    double Fant = 0.0;
+    double F_anterior_del_cajero = 0.0;
 
     while (extraerCliente(datos->cola, &c) == 0)
     {
         double S = generarExponencial(datos->mu);
-        double B = fmax(c.A, Fant);
+        double B = fmax(c.A, F_anterior_del_cajero);
         double F = B + S;
-        Fant = F;
+        F_anterior_del_cajero = F;
 
         double Wq = B - c.A;
         double W = F - c.A;
@@ -201,7 +207,7 @@ int main(int argc, char *argv[])
     if (leerConfiguracion(argv[1]) != 0)
         return 1;
 
-    srand((unsigned int)time(NULL));
+    srand(time(NULL));
 
     ColaBancaria cola;
     inicializarCola(&cola, MAX_CLIENTES);
@@ -216,8 +222,7 @@ int main(int argc, char *argv[])
     pthread_mutex_init(&stats.mutex_print, NULL);
 
     double acumulado = 0.0;
-    int N = 0;
-    int truncado = 0;
+    int N = 0, truncado = 0;
 
     while (N < MAX_CLIENTES)
     {
@@ -277,16 +282,19 @@ int main(int argc, char *argv[])
     printf("  Tiempo promedio de espera (Wq):    %.2f\n", Wq_sim);
     printf("  Tiempo promedio en sistema (W):    %.2f\n", W_sim);
     printf("  Tiempo maximo de espera:           %.2f\n", stats.Wq_max);
-    printf("  Tiempo total hasta ultimo cliente: %.2f\n\n", stats.T_total);
+    printf("  Tiempo total hasta ultimo cliente: %.2f\n", stats.T_total);
 
     printf("Resultados Teoricos (M/M/c):\n");
+
+    int c = CAJEROS;
     double a = LAMBDA / MU;
-    double rho = LAMBDA / (CAJEROS * MU);
+    double rho = a / c;
+
     printf("  Utilizacion (rho):                 %.4f\n", rho);
 
     if (rho >= 1.0)
     {
-        printf("Estado del sistema:\nrho = %.4f >= 1 -> Sistema inestable\n", rho);
+        printf("Estado del sistema:\n  rho = %.4f >= 1 -> Sistema inestable\n", rho);
     }
     else
     {
@@ -299,12 +307,20 @@ int main(int argc, char *argv[])
             sumatoria += termino;
         }
 
-        double termino_c_base = termino * (a / CAJEROS);
-        double termino_c = termino_c_base * (1.0 / (1.0 - rho));
+        double termino_c;
+        if (CAJEROS <= 170)
+        {
+            termino_c = termino * (a / (c * (1.0 - rho)));
+        }
+        else
+        {
+            double ln_termino_c = c * log(a) - lgamma(c + 1.0);
+            termino_c = exp(ln_termino_c) * (1.0 / (1.0 - rho));
+        }
 
-        double factor_C = termino_c / (sumatoria + termino_c);
+        double factor_c = termino_c / (sumatoria + termino_c);
 
-        double Wq_teo = factor_C / ((CAJEROS * MU) - LAMBDA);
+        double Wq_teo = factor_c / ((c * MU) - LAMBDA);
         double W_teo = Wq_teo + (1.0 / MU);
 
         double error_Wq = (Wq_teo > 0) ? fabs(Wq_sim - Wq_teo) / Wq_teo * 100 : 0;

@@ -1,5 +1,4 @@
 # Archivo de configuración banco.txt
-# Comentarios permitidos con #
 
 CAJEROS=4
 TCIERRE=1000
