@@ -6,12 +6,6 @@
 #include <time.h>
 #include <string.h>
 
-#define LANZAR_ERR(msg)            \
-    {                              \
-        fprintf(stderr, msg "\n"); \
-        return -1;                 \
-    }
-
 typedef struct
 {
     int id;
@@ -68,7 +62,8 @@ int leerConfiguracion(const char *filename)
     FILE *file = fopen(filename, "r");
     if (file == NULL)
     {
-        LANZAR_ERR("Error: El archivo .txt no existe o no puede abrirse.");
+        fprintf(stderr, "Error: El archivo .txt no existe o no puede abrirse.\n");
+        return -1;
     }
 
     char buffer[100], basura[2];
@@ -118,7 +113,8 @@ int leerConfiguracion(const char *filename)
 
     if (!(f_caj && f_tci && f_lam && f_mu && f_max))
     {
-        LANZAR_ERR("Error: Faltan parametros o violan restricciones.");
+        fprintf(stderr, "Error: Faltan parametros o violan restricciones.\n");
+        return -1;
     }
     return 0;
 }
