@@ -1,3 +1,20 @@
+/**
+ * Universidad Simón Bolívar
+ * CI3825 - Sistemas de Operación I
+ * Trimestre: Enero - Marzo 2026
+ *
+ * @file banco.c
+ * @brief Programa para simular un Sistema de Colas Bancario concurrente (basado en M/M/c)
+ * Este proograma permite simular el comportamiento de un banco y la atención al cliente
+ * en cajeros utilizando hilos POSIX. Se implementa un modelo productor-consumidor adaptado
+ * con tiempo lógico, donde el hilo principal produce las llegadas (productor) y múltiples
+ * hilos secundarios actúan como cajeros (consumidores) compartiendo una cola circular
+ * sincronizada.
+ *
+ * @author Victor Hernández (20-10349)
+ * @author Ángel Pacheco (20-10479)
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -6,47 +23,73 @@
 #include <time.h>
 #include <string.h>
 
+/**
+ * @struct Cliente
+ * @brief Representa a un cliente individual en el sistema bancario.
+ */
 typedef struct
 {
     int id;
     double A;
 } Cliente;
 
+/**
+ * @struct ColaBancaria
+ * @brief Control de la cola circular y variables de sincronización.
+ */
 typedef struct
 {
-    Cliente *buffer;
-    int capacidad;
-    int frente;
-    int final;
-    int cuenta;
+    Cliente *buffer; // Arreglo dinámico que sirve de buffer para la cola circular.
+    int capacidad;   // Capacidad (tamaño) del buffer.
+    int frente;      // Índice al primer elemento de la cola.
+    int final;       // Índice a la última posición donde ser insertará el siguiente elemento.
+    int cuenta;      // Número actual de elementos en la cola.
 
-    pthread_mutex_t mutex;
-    pthread_cond_t cond_no_vacia;
-    int banco_cerrado;
+    pthread_mutex_t mutex;        // Mutex para proteger el acceso concurrente a la cola.
+    pthread_cond_t cond_no_vacia; // Variable de condición para detener cajeros si la cola ya está vacía.
+    int banco_cerrado;            // Varible boolean (0 = abierto y 1 = cerrado).
 } ColaBancaria;
 
+/**
+ * @struct Estadisticas
+ * @brief Base para almacenar métricas estadíticas globales obtenidas en la simulación.
+ */
 typedef struct
 {
-    double suma_Wq;
-    double suma_W;
-    double Wq_max;
-    double T_total;
-    int clientes_atendidos;
-    pthread_mutex_t mutex_stats;
-    pthread_mutex_t mutex_print;
+    double suma_Wq;         // Sumatoria de los tiempos de espera en cola.
+    double suma_W;          // Sumatoria de los tiempos totales en el sistema.
+    double Wq_max;          // Tiempo de espera en cola máximo.
+    double T_total;         // Tiempo en que terminó la atención del último cliente.
+    int clientes_atendidos; // Cantidad de clientes que ya fueron atendidos.
+
+    pthread_mutex_t mutex_stats; // Mutex para proteger la actualización de las métricas estadísticas.
+    pthread_mutex_t mutex_print; // Mutex para evitar que la salida por stdout se intercale.
 } Estadisticas;
 
+/**
+ * @struct DatosCajero
+ * @brief Argumentos para pasar a los hilos de cajero en su creación.
+ */
 typedef struct
 {
-    int id_cajero;
-    ColaBancaria *cola;
-    double mu;
-    Estadisticas *stats;
+    int id_cajero;       // Identificador del cajero.
+    ColaBancaria *cola;  // Puntero al monitor de cola compartida.
+    double mu;           // Tasa de servicio exponencial.
+    Estadisticas *stats; // Puntero a la estructura de métricas estadísticas globales.
 } DatosCajero;
 
+// Inicialización de variables globales (Parámetro de la configuración .txt)
 int CAJEROS, TCIERRE, MAX_CLIENTES;
 double LAMBDA, MU;
 
+/**
+ * @brief Genera una variable aleatoria de distribución exponencial.
+ *
+ * Utiliza el método de la transformada inversa.
+ *
+ * @param tasa La tasa (lambda o mu) de la distribución.
+ * @return Un valor double que representa el tiempo generado.
+ */
 double generarExponencial(double tasa)
 {
     double u = (double)rand() / (double)RAND_MAX;
@@ -54,9 +97,16 @@ double generarExponencial(double tasa)
         u = 1e-9;
     if (u >= 1.0)
         u = 0.999999999;
+
     return -log(u) / tasa;
 }
 
+/**
+ * @brief Lee un archivo .txt y extrae la configuración del sistema bancario.
+ *
+ * @param filename Ruta del archivo de texto con los parámetros.
+ * @return 0 en caso de éxito, 1 en caso de error.
+ */
 int leerConfiguracion(const char *filename)
 {
     FILE *file = fopen(filename, "r");
@@ -67,16 +117,19 @@ int leerConfiguracion(const char *filename)
     }
 
     char buffer[100], basura[2];
-    (void)basura;
+    (void)basura; // Evita mensajes de alerta de variables sin uso.
 
+    // Variables de verificación de existencia de parámetros.
     int f_caj = 0, f_tci = 0, f_lam = 0, f_mu = 0, f_max = 0;
 
     while (fgets(buffer, sizeof(buffer), file) != NULL)
     {
+        // Ignora lineas vacías y comentarios
         if (buffer[0] == '\n' || buffer[0] == '\r' || buffer[0] == '#' ||
             (buffer[0] == '/' && buffer[1] == '/'))
             continue;
 
+        // Identifica cada variable y extrae sus valores
         if (strncmp(buffer, "CAJEROS=", 8) == 0)
         {
             if (sscanf(buffer + 8, "%d%1s", &CAJEROS, basura) == 1 && CAJEROS >= 1)
@@ -102,7 +155,7 @@ int leerConfiguracion(const char *filename)
             if (sscanf(buffer + 13, "%d%1s", &MAX_CLIENTES, basura) == 1 && MAX_CLIENTES >= 1)
                 f_max = 1;
         }
-        else if (strchr(buffer, '=') != NULL)
+        else if (strchr(buffer, '=') != NULL) // Verifica parámetros desconocidos.
         {
             char param_desconocido[50];
             if (sscanf(buffer, "%49[^=]", param_desconocido) == 1)
@@ -111,6 +164,7 @@ int leerConfiguracion(const char *filename)
     }
     fclose(file);
 
+    // Comprueba la existencia de todos los parámetros (1 si los encontró, 0 en caso contrario)
     if (!(f_caj && f_tci && f_lam && f_mu && f_max))
     {
         fprintf(stderr, "Error: Faltan parametros o violan restricciones.\n");
@@ -119,16 +173,24 @@ int leerConfiguracion(const char *filename)
     return 0;
 }
 
+/**
+ * @brief Inicializa la memoria y las variables de sincronización de la cola.
+ *
+ * @param q Puntero de la cola (ColaBancaria) a ejecutar.
+ * @param capacidad Tamaño máximo del buffer circular.
+ */
 void inicializarCola(ColaBancaria *q, int capacidad)
 {
     q->buffer = malloc(sizeof(Cliente) * capacidad);
 
+    // Verifica que el buffer se haya inicializado correctamente
     if (q->buffer == NULL)
     {
         fprintf(stderr, "Error: No se pudo asignar memoria para el buffer de la cola.\n");
         exit(EXIT_FAILURE);
     }
 
+    // Inicializa las variables de cada cola
     q->capacidad = capacidad;
     q->frente = 0;
     q->final = 0;
@@ -150,6 +212,12 @@ void inicializarCola(ColaBancaria *q, int capacidad)
     }
 }
 
+/**
+ * @brief Inserta un cliente en la cola compartida (Sección Crítica).
+ *
+ * @param q Puntero a cola (ColaBancaria).
+ * @param c Estructura Cliente a encolar.
+ */
 void insertarCliente(ColaBancaria *q, Cliente c)
 {
     pthread_mutex_lock(&q->mutex);
@@ -160,21 +228,33 @@ void insertarCliente(ColaBancaria *q, Cliente c)
         q->final = (q->final + 1) % q->capacidad;
         q->cuenta++;
 
+        // Despertar al cajero dormido (si lo hay)
         pthread_cond_signal(&q->cond_no_vacia);
     }
 
     pthread_mutex_unlock(&q->mutex);
 }
 
+/**
+ * @brief Extrae un cliente de la cola (Sección Crítica bloqueante).
+ * Si la cola está vacía pero banco sigue abierto, se bloquea el hilo a espera
+ * de un pthread_cond_signal o pthread_cond_broadcast.
+ *
+ * @param q Puntero a cola (ColaBancaria).
+ * @param c Puntero donde se almacenará el cliente extraído.
+ * @return 0 en caso de extrar al cliente con éxito, -1 si el banco cerró y la cola se vació.
+ */
 int extraerCliente(ColaBancaria *q, Cliente *c)
 {
     pthread_mutex_lock(&q->mutex);
 
+    // Espera pasivamente mientras no haya clientes y el banco siga abierto
     while (q->cuenta == 0 && q->banco_cerrado == 0)
     {
         pthread_cond_wait(&q->cond_no_vacia, &q->mutex);
     }
 
+    // Condición de terminación de hilo: Cola vacía y Banco cerrado
     if (q->cuenta == 0 && q->banco_cerrado == 1)
     {
         pthread_mutex_unlock(&q->mutex);
@@ -188,6 +268,14 @@ int extraerCliente(ColaBancaria *q, Cliente *c)
     return 0;
 }
 
+/**
+ * @brief Rutina de ejecución de hilos consumidores (Cajeros).
+ * Extrae clientes de la cola en bucle, simula la antención y actualiza
+ * los datos estadísticos y registro de la consola de manera sincronizada.
+ *
+ * @param arg Puntero a la estructura DatosCajero.
+ * @return NULL.
+ */
 void *cajero_thread_func(void *arg)
 {
     DatosCajero *datos = (DatosCajero *)arg;
@@ -196,6 +284,7 @@ void *cajero_thread_func(void *arg)
 
     while (extraerCliente(datos->cola, &c) == 0)
     {
+        // Cálculo del tiempo lógico
         double S = generarExponencial(datos->mu);
         double B = fmax(c.A, F_anterior_del_cajero);
         double F = B + S;
@@ -204,11 +293,13 @@ void *cajero_thread_func(void *arg)
         double Wq = B - c.A;
         double W = F - c.A;
 
+        // Sección Crítica (Impresión por stdout)
         pthread_mutex_lock(&datos->stats->mutex_print);
         printf("[t=%.2f] Cliente %d inicia atencion en Cajero %d\n", B, c.id, datos->id_cajero);
         printf("[t=%.2f] Cliente %d finaliza atencion en Cajero %d\n", F, c.id, datos->id_cajero);
         pthread_mutex_unlock(&datos->stats->mutex_print);
 
+        // Sección Crítca (Actualización de métricas estadísticas)
         pthread_mutex_lock(&datos->stats->mutex_stats);
         datos->stats->suma_Wq += Wq;
         datos->stats->suma_W += W;
@@ -222,6 +313,13 @@ void *cajero_thread_func(void *arg)
     return NULL;
 }
 
+/**
+ * @brief Simulación de llegada de clientes al banco según la distribución de Poisson.
+ * Función gestionada por el hilo principal antes de la ejecución de consumidores.
+ *
+ * @param cola Puntero a la cola (ColaBancaria) donde se insertarán clientes.
+ * @return 1 si el límite de MAX_CLIENTES truncó la simulación, 0 en caso contrario.
+ */
 int simularLlegadas(ColaBancaria *cola)
 {
     double acumulado = 0.0;
@@ -230,6 +328,8 @@ int simularLlegadas(ColaBancaria *cola)
     while (N < MAX_CLIENTES)
     {
         acumulado += generarExponencial(LAMBDA);
+
+        // No se aceptan más clientes luego de la hora de cierre
         if (acumulado > TCIERRE)
             break;
 
@@ -243,11 +343,19 @@ int simularLlegadas(ColaBancaria *cola)
     return (N == MAX_CLIENTES && acumulado <= TCIERRE) ? 1 : 0;
 }
 
+/**
+ * @brief Gestionador de ciclos de vida de los hilos consumidores (Cajeros).
+ * Crea hilos de cajeros, avisa de la terminación de llegadas y los reúne.
+ *
+ * @param cola Puntero a cola (ColaBancaria).
+ * @param stats Puntero a las métricas estadísticas globales.
+ */
 void procesarCajeros(ColaBancaria *cola, Estadisticas *stats)
 {
     pthread_t cajeros[CAJEROS];
     DatosCajero d_caj[CAJEROS];
 
+    // Loop principal para la creación de los hilos de cajeros
     for (int i = 0; i < CAJEROS; i++)
     {
         d_caj[i].id_cajero = i + 1;
@@ -263,11 +371,13 @@ void procesarCajeros(ColaBancaria *cola, Estadisticas *stats)
         }
     }
 
+    // Envío de señal de cierre de banco
     pthread_mutex_lock(&cola->mutex);
     cola->banco_cerrado = 1;
-    pthread_cond_broadcast(&cola->cond_no_vacia);
+    pthread_cond_broadcast(&cola->cond_no_vacia); // Despierta todos los hilos en espera.
     pthread_mutex_unlock(&cola->mutex);
 
+    // Espera por la terminación de la jornada (Join)
     for (int i = 0; i < CAJEROS; i++)
     {
         int reunion = pthread_join(cajeros[i], NULL);
@@ -279,6 +389,13 @@ void procesarCajeros(ColaBancaria *cola, Estadisticas *stats)
     }
 }
 
+/**
+ * @brief Imprime el reporte final de la ejecución con la métricas estadísticas teóricas
+ * y valores reales medidos durante la ejecución
+ *
+ * @param stats Puntero a los resultados simulados empíricamante.
+ * @param truncado Flag devuelto por simularLlegadas().
+ */
 void imprimirReporteFinal(Estadisticas *stats, int truncado)
 {
     double Wq_sim = (stats->clientes_atendidos > 0) ? stats->suma_Wq / stats->clientes_atendidos : 0;
@@ -332,6 +449,7 @@ void imprimirReporteFinal(Estadisticas *stats, int truncado)
         }
         else
         {
+            // Uso de l-gamma para prevenir overflow de factoriales grandes
             double ln_termino_c = c * log(a) - lgamma(c + 1.0);
             termino_c = exp(ln_termino_c) * (1.0 / (1.0 - rho));
         }
@@ -353,6 +471,13 @@ void imprimirReporteFinal(Estadisticas *stats, int truncado)
     }
 }
 
+/**
+ * @brief Destruye los mecanismos de sincronización y libera la memoria usada
+ * durante la ejecución.
+ *
+ * @param cola Puntero a cola (ColaBancaria).
+ * @param stats Puntero a métricas estadísticas a limpiar.
+ */
 void limpiarRecursos(ColaBancaria *cola, Estadisticas *stats)
 {
     if (cola->buffer)
@@ -363,6 +488,9 @@ void limpiarRecursos(ColaBancaria *cola, Estadisticas *stats)
     pthread_mutex_destroy(&stats->mutex_print);
 }
 
+/**
+ * @brief Hilo de ejecución principal. Gestiona el ciclo de vida del simulador.
+ */
 int main(int argc, char *argv[])
 {
     if (argc != 2)
@@ -375,20 +503,21 @@ int main(int argc, char *argv[])
 
     srand(time(NULL));
 
+    // Inicialización
     ColaBancaria cola;
     inicializarCola(&cola, MAX_CLIENTES);
 
-    Estadisticas stats = {0};
-
+    Estadisticas stats = {0}; // Garantiza inicialización en ceros
     pthread_mutex_init(&stats.mutex_stats, NULL);
     pthread_mutex_init(&stats.mutex_print, NULL);
 
+    // Ejecución lógica
     int truncado = simularLlegadas(&cola);
-
     procesarCajeros(&cola, &stats);
 
-    imprimirReporteFinal(&stats, truncado);
-    limpiarRecursos(&cola, &stats);
+    // Finalización
+    imprimirReporteFinal(&stats, truncado); // Impresión de reporte
+    limpiarRecursos(&cola, &stats);         // Limpieza de recursos empleados
 
     return 0;
 }
