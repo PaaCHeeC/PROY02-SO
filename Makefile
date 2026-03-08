@@ -6,7 +6,7 @@ CFLAGS  = -std=c11 -Wall -Wextra  -Werror -pthread	# Flags de compilación para 
 LDFLAGS = -lm 										# Flag para importación de librería matemática
 
 # all: Compila el proyecto completo
-all: banco 											# Compila el programa principal
+all: banco
 
 # Regla de compilación principal
 banco: $(OBJS)
