@@ -2,11 +2,11 @@
 
 CC      = gcc
 OBJS    = banco.c
-CFLAGS  = -std=c11 -Wall -Wextra  -Werror -pthread 	# Flags de compilación para errores e hilos
+CFLAGS  = -std=c11 -Wall -Wextra  -Werror -pthread	# Flags de compilación para errores e hilos
 LDFLAGS = -lm 										# Flag para importación de librería matemática
 
 # all: Compila el proyecto completo
-all: banco 										# Compila el programa principal y ejecuta inmediatamente
+all: banco 											# Compila el programa principal
 
 # Regla de compilación principal
 banco: $(OBJS)
