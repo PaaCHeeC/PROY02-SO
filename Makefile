@@ -6,14 +6,11 @@ CFLAGS  = -std=c11 -Wall -Wextra  -Werror -pthread 	# Flags de compilación para
 LDFLAGS = -lm 										# Flag para importación de librería matemática
 
 # all: Compila el proyecto completo
-all: banco run 										# Compila el programa principal y ejecuta inmediatamente
+all: banco 										# Compila el programa principal y ejecuta inmediatamente
 
 # Regla de compilación principal
 banco: $(OBJS)
 	$(CC) $(CFLAGS) -o banco banco.c $(LDFLAGS)
-
-run: banco.txt
-	./banco banco.txt
 
 # clean: Limpia los archivos generados
 clean: 												# Borra archivos objeto, identificadores y ejecutables
