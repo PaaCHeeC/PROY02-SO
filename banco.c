@@ -280,15 +280,15 @@ void *cajero_thread_func(void *arg)
 {
     DatosCajero *datos = (DatosCajero *)arg;
     Cliente c;
-    double F_anterior_del_cajero = 0.0;
+    double F_ant = 0.0;
 
     while (extraerCliente(datos->cola, &c) == 0)
     {
         // Cálculo del tiempo lógico
         double S = generarExponencial(datos->mu);
-        double B = fmax(c.A, F_anterior_del_cajero);
+        double B = fmax(c.A, F_ant);
         double F = B + S;
-        F_anterior_del_cajero = F;
+        F_ant = F;
 
         double Wq = B - c.A;
         double W = F - c.A;
